@@ -1,8 +1,10 @@
 """Activity-related tools for Garmin Connect MCP server."""
 
-from typing import Annotated, Any
+import base64
+from typing import Annotated, Any, Literal
 
 from fastmcp import Context
+from garminconnect import Garmin
 
 from ..client import GarminAPIError, GarminClientWrapper
 from ..pagination import build_pagination_info, decode_cursor
@@ -841,6 +843,135 @@ async def get_activity_social(
             e.message,
             "api_error",
             ["Check your Garmin Connect credentials", "Verify the activity ID is correct"],
+        )
+    except Exception as e:
+        return ResponseBuilder.build_error_response(str(e), "internal_error")
+
+
+# Map user-friendly format names to Garmin API format enum
+_DOWNLOAD_FORMAT_MAP = {
+    "fit": Garmin.ActivityDownloadFormat.ORIGINAL,
+    "gpx": Garmin.ActivityDownloadFormat.GPX,
+    "tcx": Garmin.ActivityDownloadFormat.TCX,
+    "csv": Garmin.ActivityDownloadFormat.CSV,
+    "kml": Garmin.ActivityDownloadFormat.KML,
+}
+
+DownloadFormat = Literal["fit", "gpx", "tcx", "csv", "kml"]
+
+
+async def download_activity(
+    activity_id: Annotated[int, "Activity ID to download"],
+    file_format: Annotated[
+        DownloadFormat,
+        "Download format: 'fit' (original), 'gpx', 'tcx', 'csv', or 'kml'",
+    ] = "fit",
+    ctx: Context | None = None,
+) -> str:
+    """
+    Download an activity file in the specified format.
+
+    Downloads the activity data file from Garmin Connect. The file is returned
+    as base64-encoded data that can be decoded and saved locally.
+
+    Supported formats:
+    - fit: Original FIT file (returned as ZIP archive containing the .fit file)
+    - gpx: GPS Exchange Format - widely compatible with mapping applications
+    - tcx: Training Center XML - includes heart rate and lap data
+    - csv: Comma-separated values - split/lap data in spreadsheet format
+    - kml: Keyhole Markup Language - for Google Earth visualization
+
+    Returns: JSON string with structure:
+    {
+        "data": {
+            "activity_id": 12345,
+            "format": "gpx",
+            "filename": "activity_12345.gpx",
+            "content_base64": "...",
+            "size_bytes": 12345
+        },
+        "metadata": {...}
+    }
+
+    To save the file, decode the base64 content:
+    ```python
+    import base64
+    content = base64.b64decode(response["data"]["content_base64"])
+    with open(response["data"]["filename"], "wb") as f:
+        f.write(content)
+    ```
+    """
+    assert ctx is not None
+    try:
+        client = ctx.get_state("client")
+
+        # Validate format
+        format_lower = file_format.lower()
+        if format_lower not in _DOWNLOAD_FORMAT_MAP:
+            return ResponseBuilder.build_error_response(
+                f"Invalid format: '{file_format}'. Must be one of: fit, gpx, tcx, csv, kml",
+                error_type="validation_error",
+            )
+
+        # Get the format enum
+        download_format = _DOWNLOAD_FORMAT_MAP[format_lower]
+
+        # Download the activity
+        content_bytes: bytes = client.safe_call(
+            "download_activity", activity_id, download_format
+        )
+
+        if not content_bytes:
+            return ResponseBuilder.build_error_response(
+                f"No data returned for activity {activity_id}",
+                error_type="not_found",
+            )
+
+        # Determine file extension
+        extension_map = {
+            "fit": "zip",  # FIT files come as ZIP
+            "gpx": "gpx",
+            "tcx": "tcx",
+            "csv": "csv",
+            "kml": "kml",
+        }
+        extension = extension_map[format_lower]
+        filename = f"activity_{activity_id}.{extension}"
+
+        # Base64 encode the content for JSON transport
+        content_base64 = base64.b64encode(content_bytes).decode("utf-8")
+
+        return ResponseBuilder.build_response(
+            data={
+                "activity_id": activity_id,
+                "format": format_lower,
+                "filename": filename,
+                "content_base64": content_base64,
+                "size_bytes": len(content_bytes),
+            },
+            metadata={
+                "query_type": "activity_download",
+                "activity_id": activity_id,
+                "format": format_lower,
+            },
+            analysis={
+                "insights": [
+                    f"Downloaded {filename} ({len(content_bytes):,} bytes)",
+                    "Content is base64-encoded for JSON transport",
+                    "Decode with: base64.b64decode(content_base64)",
+                ]
+            },
+        )
+
+    except GarminAPIError as e:
+        return ResponseBuilder.build_error_response(
+            e.message,
+            "api_error",
+            [
+                "Check your Garmin Connect credentials",
+                "Verify the activity ID is correct",
+                "Some activities may not be available for download",
+            ],
         )
     except Exception as e:
         return ResponseBuilder.build_error_response(str(e), "internal_error")

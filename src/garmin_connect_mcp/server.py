@@ -18,6 +18,7 @@ mcp.add_middleware(ConfigMiddleware())
 
 # Import and register all tools
 from .tools.activities import (
+    download_activity,
     get_activity_details,
     get_activity_social,
     query_activities,
@@ -68,6 +69,12 @@ mcp.tool(
         "openWorldHint": False,
     }
 )(get_activity_social)
+mcp.tool(
+    annotations={
+        "readOnlyHint": True,
+        "openWorldHint": False,
+    }
+)(download_activity)
 
 # Register analysis tools
 mcp.tool(
