@@ -46,6 +46,10 @@ async def _query_activities_paginated(
     # So we fetch all and slice in memory
     all_activities = client.safe_call("get_activities_by_date", start_date, end_date, activity_type)
 
+    # Sort by start time descending (newest first) - the Garmin API may return
+    # activities ordered by sync/upload time rather than activity start time
+    all_activities.sort(key=lambda a: a.get("beginTimestamp", 0), reverse=True)
+
     # Calculate offset for current page
     offset = (current_page - 1) * limit
 
@@ -143,6 +147,11 @@ async def _query_activities_general_paginated(
     # Fetch limit+1 to detect if there are more pages
     fetch_limit = limit + 1
     activities = client.safe_call("get_activities", start_index, fetch_limit, activity_type)
+
+    # Sort by start time descending (newest first) - the Garmin API may return
+    # activities ordered by sync/upload time rather than activity start time
+    if isinstance(activities, list):
+        activities.sort(key=lambda a: a.get("beginTimestamp", 0), reverse=True)
 
     # Check if there are more results
     has_more = len(activities) > limit
@@ -308,6 +317,10 @@ async def query_activities(
                 date_str,
                 activity_type if activity_type else None,
             )
+
+            # Sort by start time descending (newest first)
+            if activities:
+                activities.sort(key=lambda a: a.get("beginTimestamp", 0), reverse=True)
 
             if not activities:
                 type_msg = f" of type '{activity_type}'" if activity_type else ""
