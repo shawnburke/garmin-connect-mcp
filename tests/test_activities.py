@@ -6,7 +6,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from garmin_connect_mcp.tools.activities import download_activity
+from garmin_connect_mcp.tools.activities import (
+    download_activity,
+    query_activities,
+)
 
 
 @pytest.fixture
@@ -230,3 +233,96 @@ async def test_download_activity_analysis_insights(mock_context):
     insights = response["analysis"]["insights"]
     assert any("Downloaded" in i for i in insights)
     assert any("base64" in i.lower() for i in insights)
+
+
+def _make_activity(activity_id: int, begin_timestamp: int, name: str) -> dict:
+    """Helper to create a mock activity dict."""
+    return {
+        "activityId": activity_id,
+        "activityName": name,
+        "beginTimestamp": begin_timestamp,
+        "startTimeLocal": "2025-01-01 08:00:00",
+        "distance": 5000,
+        "duration": 1800,
+        "activityType": {"typeKey": "running"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_query_activities_sorts_by_date_descending(mock_context):
+    """Test that activities are returned sorted by date (newest first)."""
+    mock_ctx, mock_client = mock_context
+
+    # Return activities in wrong order (old activity synced later appears first)
+    unsorted_activities = [
+        _make_activity(1, 1700000000000, "Old Run"),  # oldest
+        _make_activity(3, 1706000000000, "Newest Run"),  # newest
+        _make_activity(2, 1703000000000, "Middle Run"),  # middle
+    ]
+    mock_client.safe_call.return_value = unsorted_activities
+
+    result = await query_activities(limit=10, ctx=mock_ctx)
+
+    response = json.loads(result)
+    activities = response["data"]["activities"]
+
+    # Should be sorted newest first
+    assert len(activities) == 3
+    assert activities[0]["activityId"] == 3  # newest
+    assert activities[1]["activityId"] == 2  # middle
+    assert activities[2]["activityId"] == 1  # oldest
+
+
+@pytest.mark.asyncio
+async def test_query_activities_by_date_range_sorts_by_date(mock_context):
+    """Test that date-range query sorts activities by date descending."""
+    mock_ctx, mock_client = mock_context
+
+    # Return activities out of order from get_activities_by_date
+    unsorted_activities = [
+        _make_activity(2, 1703000000000, "Middle Run"),
+        _make_activity(1, 1700000000000, "Old Run"),
+        _make_activity(3, 1706000000000, "Newest Run"),
+    ]
+    mock_client.safe_call.return_value = unsorted_activities
+
+    result = await query_activities(
+        start_date="2025-01-01",
+        end_date="2025-02-01",
+        limit=10,
+        ctx=mock_ctx,
+    )
+
+    response = json.loads(result)
+    activities = response["data"]["activities"]
+
+    # Should be sorted newest first
+    assert len(activities) == 3
+    assert activities[0]["activityId"] == 3
+    assert activities[1]["activityId"] == 2
+    assert activities[2]["activityId"] == 1
+
+
+@pytest.mark.asyncio
+async def test_query_activities_single_date_sorts_by_date(mock_context):
+    """Test that single-date query sorts activities by date descending."""
+    mock_ctx, mock_client = mock_context
+
+    unsorted_activities = [
+        _make_activity(1, 1700000000000, "Morning Run"),
+        _make_activity(2, 1700050000000, "Evening Run"),
+    ]
+    mock_client.safe_call.return_value = unsorted_activities
+
+    result = await query_activities(
+        date="2025-01-01",
+        ctx=mock_ctx,
+    )
+
+    response = json.loads(result)
+    activities = response["data"]["activities"]
+
+    # Should be sorted newest first
+    assert len(activities) == 2
+    assert activities[0]["activityId"] == 2  # evening (later timestamp)
+    assert activities[1]["activityId"] == 1  # morning (earlier timestamp)
